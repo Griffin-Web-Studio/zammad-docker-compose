@@ -1,0 +1,168 @@
+---
+version: "3.8"
+
+x-shared:
+  zammad-service: &zammad-service
+    environment: &zammad-environment
+      MEMCACHE_SERVERS: memcached:11211
+      POSTGRESQL_DB: ${POSTGRES_DB:-zammad_production}
+      POSTGRESQL_HOST: postgresql
+      POSTGRESQL_USER: $SERVICE_USER_POSTGRESQL
+      POSTGRESQL_PASS: $SERVICE_PASSWORD_POSTGRESQL
+      POSTGRESQL_PORT: 5432
+      POSTGRESQL_OPTIONS: ${POSTGRESQL_OPTIONS:-?pool=50}
+      POSTGRESQL_DB_CREATE:
+      REDIS_URL: redis://redis:6379
+      S3_URL:
+      # Backup settings
+      BACKUP_DIR: "${BACKUP_DIR:-/var/tmp/zammad}"
+      BACKUP_TIME: "${BACKUP_TIME:-03:00}"
+      HOLD_DAYS: "${HOLD_DAYS:-10}"
+      TZ: "${TZ:-Europe/London}"
+      # Allow passing in these variables via .env:
+      AUTOWIZARD_JSON:
+      AUTOWIZARD_RELATIVE_PATH:
+      ELASTICSEARCH_ENABLED:
+      ELASTICSEARCH_SCHEMA:
+      ELASTICSEARCH_HOST: elasticsearch
+      ELASTICSEARCH_PORT:
+      ELASTICSEARCH_USER: elastic
+      ELASTICSEARCH_PASS: ${SERVICE_PASSWORD_ELASTICSEARCH}
+      ELASTICSEARCH_NAMESPACE:
+      ELASTICSEARCH_REINDEX:
+      NGINX_PORT:
+      NGINX_CLIENT_MAX_BODY_SIZE:
+      NGINX_SERVER_NAME:
+      NGINX_SERVER_SCHEME:
+      RAILS_TRUSTED_PROXIES:
+      ZAMMAD_HTTP_TYPE:
+      ZAMMAD_WEB_CONCURRENCY:
+      ZAMMAD_PROCESS_SESSIONS_JOBS_WORKERS:
+      ZAMMAD_PROCESS_SCHEDULED_JOBS_WORKERS:
+      ZAMMAD_PROCESS_DELAYED_JOBS_WORKERS:
+      # ZAMMAD_SESSION_JOBS_CONCURRENT is deprecated, please use ZAMMAD_PROCESS_SESSIONS_JOBS_WORKERS instead.
+      ZAMMAD_SESSION_JOBS_CONCURRENT:
+      # Variables used by ngingx-proxy container for reverse proxy creations
+      # for docs refer to https://github.com/nginx-proxy/nginx-proxy
+      VIRTUAL_HOST:
+      VIRTUAL_PORT:
+      # Variables used by acme-companion for retrieval of LetsEncrypt certificate
+      # for docs refer to https://github.com/nginx-proxy/acme-companion
+      LETSENCRYPT_HOST:
+      LETSENCRYPT_EMAIL:
+
+    image: ${IMAGE_REPO:-ghcr.io/zammad/zammad}:${VERSION:-6.5.0-101}
+    restart: always
+    volumes:
+      - "zammad-storage:/opt/zammad/storage"
+    depends_on:
+      - memcached
+      - postgresql
+      - redis
+
+services:
+  zammad-backup:
+    <<: *zammad-service
+    command: ["zammad-backup"]
+    volumes:
+      - "zammad-backup:/var/tmp/zammad"
+      - "zammad-storage:/opt/zammad/storage:ro"
+    user: 0:0
+
+  zammad-init:
+    <<: *zammad-service
+    command: ["zammad-init"]
+    depends_on:
+      - postgresql
+    restart: always
+    user: 0:0
+
+  zammad-railsserver:
+    <<: *zammad-service
+    command: ["zammad-railsserver"]
+    environment:
+      SERVICE_FQDN_ZAMMAD:
+
+  zammad-scheduler:
+    <<: *zammad-service
+    command: ["zammad-scheduler"]
+
+  zammad-websocket:
+    <<: *zammad-service
+    command: ["zammad-websocket"]
+
+  nginx:
+    <<: *zammad-service
+    command: ["zammad-nginx"]
+    depends_on:
+      - zammad-railsserver
+
+  # External Services
+
+  elasticsearch:
+    image: bitnami/elasticsearch:${ELASTICSEARCH_VERSION:-8.18.0}
+    restart: always
+    volumes:
+      - "elasticsearch-data:/bitnami/elasticsearch/data"
+    environment:
+      # See https://github.com/bitnami/containers/tree/main/bitnami/elasticsearch#environment-variables
+      #
+      # Enable authorization without HTTPS. For external access with
+      #   SSL termination, use solutions like nginx-proxy-manager.
+      ELASTICSEARCH_ENABLE_SECURITY: 'true'
+      ELASTICSEARCH_SKIP_TRANSPORT_TLS: 'true'
+      ELASTICSEARCH_ENABLE_REST_TLS: 'false'
+      # ELASTICSEARCH_USER is hardcoded to 'elastic' in the container.
+      ELASTICSEARCH_PASSWORD: ${SERVICE_PASSWORD_ELASTICSEARCH}
+      # Resource settings
+      ELASTICSEARCH_HEAP_SIZE:
+      ELASTICSEARCH_MAX_ALLOWED_MEMORY_PERCENTAGE:
+      ELASTICSEARCH_MAX_ALLOWED_MEMORY:
+      ELASTICSEARCH_MAX_TIMEOUT:
+      ELASTICSEARCH_LOCK_ALL_MEMORY:
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9200/_cluster/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  memcached:
+    command: memcached -m 256M
+    image: memcached:${MEMCACHE_VERSION:-1.6.38-alpine}
+    restart: always
+    healthcheck:
+      test: ["CMD", "sh", "-c", "echo 'stats' | nc localhost 11211 | grep -q 'STAT'"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  postgresql:
+    image: postgres:${POSTGRES_VERSION:-17.5-alpine}
+    environment:
+      POSTGRES_DB: ${POSTGRESQL_DATABASE:-zammad_production}"
+      POSTGRES_USER: ${SERVICE_USER_POSTGRESQL}
+      POSTGRES_PASSWORD: ${SERVICE_PASSWORD_POSTGRESQL}
+    restart: always
+    volumes:
+      - "postgresql-data:/var/lib/postgresql/data"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"
+      interval: 5s
+      timeout: 20s
+      retries: 10
+
+  redis:
+    image: redis:${REDIS_VERSION:-7.4.4-alpine}
+    restart: always
+    volumes:
+      - "redis-data:/data"
+    healthcheck:
+      test:
+        - CMD
+        - redis-cli
+        - ping
+      interval: 5s
+      timeout: 5s
+      retries: 10
